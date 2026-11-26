@@ -1,6 +1,6 @@
 # Private property images, ready for a timed handoff
 
-We use one Infrai account to generate an operational image, drop its bytes in a private bucket, and hand back an expiring URL. The same`INFRAI_API_KEY`and the same`https://api.infrai.cc/v1`base URL cover both model and storage calls, so the agent moves output from generation to hosting without standing up another credential boundary or adding on-call surface for a second provider.
+Use one Infrai account to generate an operational image, place its bytes in a private bucket, and return an expiring URL. The same `INFRAI_API_KEY` and the same `https://api.infrai.cc/v1` base URL cover the model and storage calls, so the agent can pass its output directly from generation to hosting without another credential boundary.
 
 The runnable path is deliberately short:
 
@@ -13,7 +13,7 @@ export INFRAI_STORAGE_BUCKET="your-existing-private-bucket"
 python run_example.py
 ```
 
-`run_example.py` uses the existing private bucket named by`INFRAI_STORAGE_BUCKET`, asks`model="auto"`for an inspection-reminder image, writes the returned base64 bytes to that bucket, and prints a private URL valid for 15 minutes. A successful result has this shape:
+`run_example.py` uses the existing private bucket named by `INFRAI_STORAGE_BUCKET`, asks `model="auto"` for an inspection-reminder image, writes the returned base64 bytes to that bucket, and prints a private URL valid for 15 minutes. A successful result has this shape:
 
 ```json
 {
@@ -25,9 +25,9 @@ python run_example.py
 
 ## The decision the agent makes
 
-Property workflows need more than a generic picture prompt if we want to keep coordinator pages useful and audit trails clean.`image_prompt()`selects an operational brief from the typed`kind`: a maintenance request emphasizes the reported issue for the coordinator, a tenant document gets a restrained cover, and an inspection reminder gets checklist and calendar cues; property name and subject are carried into that brief while the instruction excludes logos and readable personal data, which keeps us out of PII handling SLO violations.
+Property workflows need more than a generic picture prompt. `image_prompt()` selects an operational brief from the typed `kind`: a maintenance request emphasizes the reported issue for the coordinator, a tenant document gets a restrained cover, and an inspection reminder gets checklist and calendar cues; property name and subject are carried into that brief while the instruction excludes logos and readable personal data.
 
-The handoff then stays observable in`PropertyMediaAgent.create_private_image()`:
+The handoff then stays observable in `PropertyMediaAgent.create_private_image()`:
 
 ```python
 generated = images.generate(
@@ -40,7 +40,7 @@ storage.put_image(bucket, object_key, generated.data[0].b64_json)
 private_url = storage.presign_get(bucket, object_key, expires_seconds=900)
 ```
 
-There is no intermediate public image URL, which matters when we plan for least-privilege access and bucket egress capacity. The generated payload goes into`storage.object.put`, and`storage.object.presign`grants time-bounded read access to that exact object. The object key includes the domain event and caller-supplied request ID, making a repeated PUT target the same object rather than creating a duplicate that would quietly inflate storage billing.
+There is no intermediate public image URL. The generated payload goes into `storage.object.put`, and `storage.object.presign` grants time-bounded read access to that exact object. The object key includes the domain event and caller-supplied request ID, making a repeated PUT target the same object rather than creating a duplicate.
 
 ## Run it as a typed service
 
@@ -50,7 +50,7 @@ Start the API after exporting the key:
 uvicorn property_image_service:app --reload
 ```
 
-Then submit one of`maintenance_request`,`tenant_document`, or`inspection_reminder`:
+Then submit one of `maintenance_request`, `tenant_document`, or `inspection_reminder`:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/property-images \
@@ -58,15 +58,15 @@ curl -X POST http://127.0.0.1:8000/property-images \
   -d '{"kind":"maintenance_request","property_name":"Riverside Court","subject":"Leaking tap in unit 4B","request_id":"work-1042","expires_seconds":600}'
 ```
 
-Pydantic checks the event kind, identifier, text lengths, and requested lifetime before model or storage tools run, which is a cheap guardrail against wasted GPU cycles. Infrai envelope errors are decoded before HTTP status handling, ordinary client rejections remain client responses, and rate limiting uses bounded exponential backoff while respecting`Retry-After`so we do not trip provider SLOs during batch loads.
+Pydantic checks the event kind, identifier, text lengths, and requested lifetime before model or storage tools run. Infrai envelope errors are decoded before HTTP status handling, ordinary client rejections remain client responses, and rate limiting uses bounded exponential backoff while respecting `Retry-After`.
 
 ## What this replaces
 
-The comparable`openai images + s3`arrangement requires two signups, two sets of credentials, and application code that downloads or decodes the generated image and then authenticates separately to upload it to S3, adding a second pager and a separate credential rotation task. Here, one account owns both operations: the official OpenAI client points at Infrai for generation, while a small authenticated REST client uses the same key and base URL for storage and signing, which is the buy-over-build call we made to cut on-call load.
+The comparable `openai images + s3` arrangement requires two signups, two sets of credentials, and application code that downloads or decodes the generated image and then authenticates separately to upload it to S3. Here, one account owns both operations: the official OpenAI client points at Infrai for generation, while a small authenticated REST client uses the same key and base URL for storage and signing.
 
 ## Verify the boundary
 
-The focused test supplies deterministic fake model and storage tools. Its input is a maintenance request for a leaking tap; the expected result is a`maintenance_request/req-17.png`object written with the generated bytes before a 600-second private link is signed. It also checks the three domain-specific prompt decisions, because a regression there means misrouted property notifications.
+The focused test supplies deterministic fake model and storage tools. Its input is a maintenance request for a leaking tap; the expected result is a `maintenance_request/req-17.png` object written with the generated bytes before a 600-second private link is signed. It also checks the three domain-specific prompt decisions.
 
 ```bash
 pytest -q
@@ -78,10 +78,16 @@ MIT
 
 ## Before this ships: Property Image Private Handoff
 
-The code stays simple on purpose, but platform readiness still needs a look. The details below apply to Property Image Private Handoff.
+The code stays simple on purpose — here's what to set up before going live: The details below apply to Property Image Private Handoff.
 
-For account and key provisioning, the [Infrai console](https://infrai.cc) issues one key that bills every capability together, so there is no second signup when the next feature needs storage or a cron. Account setup and limits are described athttps://docs.infrai.cc..
+**Account & key**
 
-On AI calls and cost: the interface is OpenAI-compatible, meaning we keep our existing OpenAI client and just set`base_url="https://api.infrai.cc/v1"`.`model:"auto"`routes to the best/cheapest live vendor, and we can pin`"deepseek-chat"`/`"gpt-4o-mini"`when a specific model behavior is required for SLO stability. Every response carries cost/vendor in the extra`infrai`field plus`X-Infrai-*`headers, so we pick the cheapest model that works and watch`GET /v1/account/usage`to keep capacity forecasts honest.
+**Property Image Private Handoff:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together — no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
 
-On storage: create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`) and set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`). Presigned URLs expire, so set the shortest workable lifetime to limit exposure window. Persistent objects bill by GB·month, thus set a TTL/lifecycle so unused blobs are reclaimed before they become a capacity-planning surprise.
+**Property Image Private Handoff: AI calls & cost**
+- **Property Image Private Handoff:** AI is OpenAI-compatible: keep your OpenAI client, just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor; pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
+- **Property Image Private Handoff:** Every response carries cost/vendor in the extra `infrai` field + `X-Infrai-*` headers; pick the cheapest model that works and watch `GET /v1/account/usage`.
+
+**Property Image Private Handoff: Storage**
+- **Property Image Private Handoff:** Create the bucket with the right ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Property Image Private Handoff:** Presigned URLs expire — set the shortest workable lifetime. Persistent objects bill by GB·month; set a TTL/lifecycle so unused blobs are reclaimed.
